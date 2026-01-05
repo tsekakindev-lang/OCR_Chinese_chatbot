@@ -86,6 +86,32 @@ body { background: #0b1020; }
     white-space: nowrap;
 }
 
+/* Tips styling (dark UI friendly) */
+.tips { line-height: 1.4; }
+
+.tips .tip-badge{
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+
+.tips .tip-code{
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: .45rem;
+  padding: .1rem .35rem;
+}
+
+.tips .tip-keyword{
+  background: rgba(245,158,11,0.16); /* amber-like */
+  border-color: rgba(245,158,11,0.25);
+}
+
+.tips .tip-label{
+  font-weight: 600;
+  color: rgba(255,255,255,0.85);
+}
+
+
 /* ---------------------------
    Custom secondary outline button (blue)
    --------------------------- */
