@@ -185,4 +185,4 @@ This app accepts file uploads and runs a local LLM workflow. If you deploy it be
 
 # License
 
-If you paste your `app.py` endpoints (or tell me what URLs your frontend calls), I can customize the **API Endpoints**, **env vars**, and exact **install requirements** so it matches your app perfectly.
+For reference only. 
