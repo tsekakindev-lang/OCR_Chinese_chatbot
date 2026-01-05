@@ -137,7 +137,7 @@ export EMBED_MODEL_PATH="/path/to/bge-large-zh-v1.5"
 ```
 setx EMBED_MODEL_PATH "C:\path\to\bge-large-zh-v1.5"
 ```
-Run the App
+## Run the App
 
 From the project root:
 ```
