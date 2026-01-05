@@ -1,38 +1,41 @@
-PDF Chat (RAG) — FastAPI + Chroma + Ollama
+# PDF Chat (RAG) — FastAPI + Chroma + Ollama
 
-A simple local web app that lets you upload a PDF and chat with it using Retrieval-Augmented Generation (RAG).
+Upload a PDF and chat with it using Retrieval-Augmented Generation (RAG).  
+Runs locally with a FastAPI backend and a simple web UI.
 
-Backend: FastAPI
+> ✅ Tip: Add a screenshot of your UI here later.
 
-Vector DB: Chroma (persisted per PDF)
+---
 
-Embeddings: local HuggingFace model (default: ./bge-large-zh-v1.5)
+## Features
+- Upload PDF from the browser
+- Index PDF into a vector database (Chroma)
+- Ask questions and get answers grounded in the PDF content
+- Clear/reset current PDF + stored vectors (if your app supports it)
 
-LLM: Ollama (default model: deepseek-r1:14b)
+---
 
-OCR fallback (optional): Tesseract + pdf2image + Poppler (helpful for scanned PDFs)
+## Tech Stack
+- **Backend:** FastAPI (Python)
+- **Vector DB:** Chroma
+- **Embeddings:** Local HuggingFace model (example: `bge-large-zh-v1.5`)
+- **LLM:** Ollama (example model: `deepseek-r1:14b`)
+- **Frontend:** Static HTML/CSS/JS in `static/`
 
-Features
+---
 
-Upload a PDF from the browser
-
-Automatically indexes the PDF into a per-file Chroma DB
-
-Ask questions and get answers with page references (best-effort)
-
-“Clear” button resets the active PDF and deletes its stored vectors/files
-
-Note: This server keeps only one active indexed PDF at a time.
-
-Project Structure
+## Project Structure
+```txt
 .
 ├── app.py
 ├── static/
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
-├── uploads/        # created at runtime
-└── chroma_dbs/     # created at runtime (per-PDF folders)
+├── uploads/        # runtime (ignored by git)
+├── extracted/      # runtime (ignored by git)
+└── chroma_dbs/     # runtime (ignored by git)
+
 
 Requirements
 Must-have
@@ -46,6 +49,7 @@ Optional (only if you need OCR for scanned PDFs)
 Tesseract OCR
 
 Poppler (needed by pdf2image)
+
 
 Setup
 1) Create a virtual environment
