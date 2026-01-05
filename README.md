@@ -153,19 +153,18 @@ http://127.0.0.1:8000
 
 ## Configuration (Environment Variables)
 
-These are read in app.py:
-```
-Variable	Default	What it does
-EMBED_MODEL_PATH	./bge-large-zh-v1.5	Local HF embedding model directory
-OLLAMA_MODEL	deepseek-r1:14b	Ollama model name
-CHUNK_SIZE	600	Text chunk size for indexing
-CHUNK_OVERLAP	100	Overlap between chunks
-TOP_K	5	Retrieved chunks per question
-OCR_LANG	chi_tra	Tesseract OCR language
-OCR_DPI	200	Render DPI for OCR images
-POPPLER_PATH	(auto-detect on Windows if bundled)	Poppler bin path for pdf2image
-OCR notes (optional)
-```
+These are variables in `app.py`:
+
+| Variable           | Default                  | Description                     |
+| ------------------ | ------------------------ | ------------------------------- |
+| `EMBED_MODEL_PATH` | `./bge-large-zh-v1.5`    | Local embedding model directory |
+| `OLLAMA_MODEL`     | `deepseek-r1:14b`        | Ollama model name               |
+| `CHUNK_SIZE`       | `600`                    | Chunk size for indexing         |
+| `CHUNK_OVERLAP`    | `100`                    | Chunk overlap                   |
+| `TOP_K`            | `5`                      | Retrieved chunks per question   |
+| `OCR_LANG`         | `chi_tra`                | Tesseract language code         |
+| `OCR_DPI`          | `200`                    | OCR render DPI                  |
+| `POPPLER_PATH`     | (auto-detect if bundled) | Path to Poppler `bin` (for OCR) |
 
 ---
 
