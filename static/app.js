@@ -294,6 +294,9 @@ function setSending(isSending) {
   sendBtn.disabled = isSending;
   uploadBtn.disabled = isSending;
   clearBtn.disabled = isSending;
+
+  // ✅ also disable “Clean the uploaded PDF”
+  if (cleanPdfBtn) cleanPdfBtn.disabled = isSending;
 }
 
 
@@ -409,6 +412,9 @@ function setBusy(next) {
   uploadBtn.disabled = isBusy;
   clearBtn.disabled = isBusy;
   textInput.disabled = isBusy;
+
+  // ✅ also disable “Clean the uploaded PDF”
+  if (cleanPdfBtn) cleanPdfBtn.disabled = isBusy;
 
   // Toggle spinners
   uploadSpinner.classList.toggle("d-none", !busy.uploading);
