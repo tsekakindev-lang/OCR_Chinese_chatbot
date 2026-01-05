@@ -230,11 +230,6 @@ Clears current PDF + deletes its stored files/vectors
 ```
 curl -X POST http://127.0.0.1:8000/clear
 ```
-### ✨ Improvements Made
-- **Icons**: 📤 for upload, 💬 for chat, 🧹 for clear — instantly recognizable.  
-- **Consistent formatting**: Each endpoint has **Example** and **Returns** clearly separated.  
-- **Syntax highlighting**: `bash` for curl commands, `json` for responses.  
-- **Readable layout**: Horizontal rules (`---`) separate endpoints cleanly.  
 
 ---
 
