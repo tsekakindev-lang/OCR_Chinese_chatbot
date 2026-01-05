@@ -1,0 +1,25 @@
+# --- Web API ---
+fastapi
+uvicorn[standard]
+pydantic>=2
+python-multipart
+
+# --- RAG stack (LangChain + Chroma + embeddings + Ollama) ---
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-huggingface
+langchain-chroma
+langchain-ollama
+chromadb
+
+# --- PDF text extraction ---
+PyMuPDF
+
+# --- Embeddings runtime (often required by HuggingFaceEmbeddings) ---
+sentence-transformers
+
+# --- Optional OCR fallback (for scanned PDFs) ---
+pdf2image
+pytesseract
+Pillow
