@@ -60,6 +60,15 @@ Runs locally with a FastAPI backend and a simple web UI.
 - [![Ollama Install](https://img.shields.io/badge/Ollama-Download-yellow?style=for-the-badge&logo=ollama)](https://ollama.com/download) — Install Ollama for local LLM execution.
 - [![Ollama Docs](https://img.shields.io/badge/Ollama-Docs-yellow?style=for-the-badge&logo=github)](https://github.com/ollama/ollama) — Explore the official documentation.
 
+## Embedding model
+
+This repo expects a local embedding model folder, default:
+```
+./bge-large-zh-v1.5
+```
+### 🧩 Model: BAAI bge-large-zh-v1.5
+- [![Model Page](https://img.shields.io/badge/HuggingFace-Model-orange?style=for-the-badge&logo=huggingface)](https://huggingface.co/BAAI/bge-large-zh-v1.5) — Reference and download page
+
 ## OCR Optional (only if you need OCR for scanned PDFs)
 
 ### 🔍 Tesseract OCR
@@ -71,15 +80,6 @@ Runs locally with a FastAPI backend and a simple web UI.
 - [![Poppler Windows](https://img.shields.io/badge/Poppler-Windows%20Build-lightblue?style=for-the-badge&logo=windows)](https://github.com/oschwartz10612/poppler-windows) — Windows builds  
 - [![Poppler macOS](https://img.shields.io/badge/Poppler-macOS%20(Homebrew)-silver?style=for-the-badge&logo=apple)](https://brew.sh/) — Install via Homebrew: `brew install poppler`
 - [![Poppler Linux](https://img.shields.io/badge/Poppler-Linux%20Packages-green?style=for-the-badge&logo=linux)](#) — Install via your distro package manager (e.g., `apt install poppler-utils`)
-
-## Embedding model
-
-This repo expects a local embedding model folder, default:
-```
-./bge-large-zh-v1.5
-```
-### 🧩 Model: BAAI bge-large-zh-v1.5
-- [![Model Page](https://img.shields.io/badge/HuggingFace-Model-orange?style=for-the-badge&logo=huggingface)](https://huggingface.co/BAAI/bge-large-zh-v1.5) — Reference and download page
 
 ---
 
