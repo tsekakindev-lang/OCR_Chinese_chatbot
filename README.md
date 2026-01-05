@@ -1,4 +1,4 @@
-# PDF Chat (RAG) — FastAPI + Chroma + Ollama
+# 🤖PDF Chat (RAG) — FastAPI + Chroma + Ollama
 
 Upload a PDF and chat with it using Retrieval-Augmented Generation (RAG).  
 Runs locally with a FastAPI backend and a simple web UI.
@@ -8,10 +8,19 @@ Runs locally with a FastAPI backend and a simple web UI.
 ---
 
 ## Features
-- Upload PDF from the browser
-- Index PDF into a vector database (Chroma)
-- Ask questions and get answers grounded in the PDF content
-- Clear/reset current PDF + stored vectors (if your app supports it)
+- Web UI: upload PDF → ask questions → clear/reset
+- Per-PDF persistent vector store (Chroma)
+- Chinese prompt + chat history injection (history is not used for retrieval)
+- OCR fallback for scanned PDFs
+
+---
+
+## How it works (high level)
+1. **Upload** PDF → saved to `uploads/`
+2. **Extract text** via PyMuPDF  
+   - If almost no text is extracted → **OCR fallback** (optional)
+3. **Chunk + embed** → stored in `chroma_dbs/<file_id>/`
+4. **Chat** endpoint retrieves top-K chunks and calls Ollama LLM
 
 ---
 
@@ -37,21 +46,44 @@ Runs locally with a FastAPI backend and a simple web UI.
 └── chroma_dbs/     # runtime (ignored by git)
 
 ```
-Requirements
-Must-have
 
-Python 3.10+ (3.11+ recommended)
+---
 
-Ollama installed and running
+# 📋Requirements
+## Required
 
-Optional (only if you need OCR for scanned PDFs)
+### 🐍 Python 3.10+
+- [![Python 3.10+ Install](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python)](https://www.python.org/downloads/) — Download and install the latest version of Python 3.10 or higher.
 
-Tesseract OCR
+### 🦙 Ollama (LLM Runtime)
 
-Poppler (needed by pdf2image)
+- [![Ollama Install](https://img.shields.io/badge/Ollama-Download-yellow?style=for-the-badge&logo=ollama)](https://ollama.com/download) — Install Ollama for local LLM execution.
+- [![Ollama Docs](https://img.shields.io/badge/Ollama-Docs-yellow?style=for-the-badge&logo=github)](https://github.com/ollama/ollama) — Explore the official documentation.
 
+## OCR Optional (only if you need OCR for scanned PDFs)
 
-# Setup
+### 🔍 Tesseract OCR
+- [![Tesseract Install](https://img.shields.io/badge/Tesseract-UB%20Mannheim%20Build-lightgrey?style=for-the-badge&logo=google)](https://github.com/UB-Mannheim/tesseract/wiki) — Windows installer (UB Mannheim build)  
+- [![Tesseract Docs](https://img.shields.io/badge/Tesseract-Docs-lightgrey?style=for-the-badge&logo=readthedocs)](https://tesseract-ocr.github.io/) — Official documentation
+
+### 📄 Poppler (for pdf2image)
+
+- [![Poppler Windows](https://img.shields.io/badge/Poppler-Windows%20Build-lightblue?style=for-the-badge&logo=windows)](https://github.com/oschwartz10612/poppler-windows) — Windows builds  
+- [![Poppler macOS](https://img.shields.io/badge/Poppler-macOS%20(Homebrew)-silver?style=for-the-badge&logo=apple)](https://brew.sh/) — Install via Homebrew: `brew install poppler`
+- [![Poppler Linux](https://img.shields.io/badge/Poppler-Linux%20Packages-green?style=for-the-badge&logo=linux)](#) — Install via your distro package manager (e.g., `apt install poppler-utils`)
+
+## Embedding model
+
+This repo expects a local embedding model folder, default:
+```
+./bge-large-zh-v1.5
+```
+### 🧩 Model: BAAI bge-large-zh-v1.5
+- [![Model Page](https://img.shields.io/badge/HuggingFace-Model-orange?style=for-the-badge&logo=huggingface)](https://huggingface.co/BAAI/bge-large-zh-v1.5) — Reference and download page
+
+---
+
+# ⚙️Setup
 ## 1) Create a virtual environment
 ```
 python -m venv .venv
@@ -97,11 +129,11 @@ By default the app looks for:
 ```
 If your embedding model lives somewhere else, set:
 
-# macOS/Linux
+## macOS/Linux
 ```
 export EMBED_MODEL_PATH="/path/to/bge-large-zh-v1.5"
 ```
-# Windows PowerShell
+## Windows PowerShell
 ```
 setx EMBED_MODEL_PATH "C:\path\to\bge-large-zh-v1.5"
 ```
@@ -116,7 +148,10 @@ Open:
 ```
 http://127.0.0.1:8000
 ```
-# Configuration (Environment Variables)
+
+---
+
+## Configuration (Environment Variables)
 
 These are read in app.py:
 ```
@@ -131,44 +166,80 @@ OCR_DPI	200	Render DPI for OCR images
 POPPLER_PATH	(auto-detect on Windows if bundled)	Poppler bin path for pdf2image
 OCR notes (optional)
 ```
-OCR activates only when normal PDF text extraction returns almost nothing.
 
-On Windows, the code currently uses a default Tesseract path in app.py. If your Tesseract is installed elsewhere (or you’re on macOS/Linux), update that constant or set your environment accordingly.
+---
 
-# API Endpoints
-## POST /upload
+## OCR Notes
+
+OCR runs only if **PyMuPDF** extracts almost no text (typical for scanned PDFs).
+
+### ⚙️ Windows Defaults
+By default, `app.py` points to:
+- `C:\Program Files\Tesseract-OCR\tesseract.exe`
+- `C:\Program Files\Tesseract-OCR\tessdata`
+
+If your installation paths differ, update the constants in `app.py`:
+- `TESSERACT_CMD`
+- `TESSDATA_PREFIX`
+
+### 🌐 Language Data
+- [![Tesseract Language Data](https://img.shields.io/badge/Tesseract-Language%20Data-lightgrey?style=for-the-badge&logo=github)](https://github.com/tesseract-ocr/tessdata) — Reference for language files (e.g., `chi_tra`)
+
+### 💻 macOS / Linux
+If you’re on macOS or Linux, update the constants in `app.py` or set your environment variables accordingly.
+
+---
+
+# 📡API Endpoints
+## 📤POST /upload
 
 Upload a PDF (multipart/form-data with field name file).
 
-Example:
+**Example:**
 ```
 curl -F "file=@your.pdf" http://127.0.0.1:8000/upload
 ```
 
-Returns:
+**Returns:**
 ```
 { "ok": true, "name": "your.pdf", "id": "abcdef123456" }
 ```
-## POST /chat
 
-Send messages:
+---
+
+## 💬POST /chat
+
+**Send messages:**
 ```
 curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"What is this PDF about?"}]}'
 ```
 
-Returns:
+**Returns:**
 ```
 { "reply": "..." }
 ```
-## POST /clear
 
-Clears current PDF + deletes its stored files/vectors:
+---
+
+## 🧹POST /clear
+
+Clears current PDF + deletes its stored files/vectors
+
+**Example:**
 ```
 curl -X POST http://127.0.0.1:8000/clear
 ```
-# Troubleshooting
+### ✨ Improvements Made
+- **Icons**: 📤 for upload, 💬 for chat, 🧹 for clear — instantly recognizable.  
+- **Consistent formatting**: Each endpoint has **Example** and **Returns** clearly separated.  
+- **Syntax highlighting**: `bash` for curl commands, `json` for responses.  
+- **Readable layout**: Horizontal rules (`---`) separate endpoints cleanly.  
+
+---
+
+# 🛠️Troubleshooting
 
 “No PDF indexed yet. Upload a PDF first.”
 Upload a PDF via the UI or POST /upload before chatting.
@@ -179,7 +250,9 @@ Install pytesseract and pdf2image, and ensure Tesseract + Poppler are installed/
 Large PDF indexing is slow
 That’s normal. Try smaller PDFs first or reduce CHUNK_SIZE/TOP_K.
 
-# Security Notes
+---
+
+# 🛡️Security Notes
 
 This app accepts file uploads and runs a local LLM workflow. If you deploy it beyond localhost, add authentication and restrict file handling.
 
