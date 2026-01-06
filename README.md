@@ -7,7 +7,16 @@
 Upload a PDF and chat with it using Retrieval-Augmented Generation (RAG).  
 Runs locally with a FastAPI backend and a simple web UI.
 
+## UI
 ![App Screenshot](docs/screenshot.png)
+
+## Upload
+
+![Upload & Reindex](docs/screenshot_upload.png)
+
+## Chat
+
+![Chat & Sources](docs/screenshot_chat.png)
 
 ---
 
