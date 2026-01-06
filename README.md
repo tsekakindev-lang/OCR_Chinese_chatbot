@@ -254,6 +254,24 @@ Install pytesseract and pdf2image, and ensure Tesseract + Poppler are installed/
 Large PDF indexing is slow
 That’s normal. Try smaller PDFs first or reduce CHUNK_SIZE/TOP_K.
 
+### Make Tesseract paths configurable (Windows)
+
+If your machine doesn’t have Tesseract installed in the same location, you can switch the hard-coded paths to environment variables:
+
+```py
+TESSERACT_CMD = os.getenv("TESSERACT_CMD", "")
+TESSDATA_PREFIX = os.getenv("TESSDATA_PREFIX", "")
+
+if TESSDATA_PREFIX:
+    os.environ["TESSDATA_PREFIX"] = TESSDATA_PREFIX
+```
+
+Example `.env`:
+```
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+TESSDATA_PREFIX=C:\Program Files\Tesseract-OCR\tessdata
+```
+
 ---
 
 # 🛡️ Security Notes
