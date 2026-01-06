@@ -1,4 +1,8 @@
-# 🤖PDF Chat (RAG) — FastAPI + Chroma + Ollama
+# 🤖 PDF Chat (RAG) — FastAPI + Chroma + Ollama
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-ready-009688)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/badge/License-MIT-informational)](#license)
 
 Upload a PDF and chat with it using Retrieval-Augmented Generation (RAG).  
 Runs locally with a FastAPI backend and a simple web UI.
@@ -7,7 +11,7 @@ Runs locally with a FastAPI backend and a simple web UI.
 
 ---
 
-## Features
+## ✨ Features
 - Web UI: upload PDF → ask questions → clear/reset
 - Per-PDF persistent vector store (Chroma)
 - Chinese prompt + chat history injection (history is not used for retrieval)
@@ -15,7 +19,7 @@ Runs locally with a FastAPI backend and a simple web UI.
 
 ---
 
-## How it works (high level)
+## 🧠 How it works (high level)
 1. **Upload** PDF → saved to `uploads/`
 2. **Extract text** via PyMuPDF  
    - If almost no text is extracted → **OCR fallback** (optional)
@@ -24,7 +28,7 @@ Runs locally with a FastAPI backend and a simple web UI.
 
 ---
 
-## Tech Stack
+## 🧱 Tech Stack
 - **Backend:** FastAPI (Python)
 - **Vector DB:** Chroma
 - **Embeddings:** Local HuggingFace model (example: `bge-large-zh-v1.5`)
@@ -33,7 +37,7 @@ Runs locally with a FastAPI backend and a simple web UI.
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 ```txt
 .
 ├── app.py
@@ -49,7 +53,7 @@ Runs locally with a FastAPI backend and a simple web UI.
 
 ---
 
-# 📋Requirements
+# 📋 Requirements
 ## Required
 
 ### 🐍 Python 3.10+
@@ -83,7 +87,7 @@ This repo expects a local embedding model folder, default:
 
 ---
 
-# ⚙️Setup
+# 🚀 Setup
 ## 1) Create a virtual environment
 ```
 python -m venv .venv
@@ -151,24 +155,26 @@ http://127.0.0.1:8000
 
 ---
 
-## Configuration (Environment Variables)
+## ⚙️ Configuration (Environment Variables)
 
 These are variables in `app.py`:
 
-| Variable           | Default                  | Description                     |
-| ------------------ | ------------------------ | ------------------------------- |
-| `EMBED_MODEL_PATH` | `./bge-large-zh-v1.5`    | Local embedding model directory |
-| `OLLAMA_MODEL`     | `deepseek-r1:14b`        | Ollama model name               |
-| `CHUNK_SIZE`       | `600`                    | Chunk size for indexing         |
-| `CHUNK_OVERLAP`    | `100`                    | Chunk overlap                   |
-| `TOP_K`            | `5`                      | Retrieved chunks per question   |
-| `OCR_LANG`         | `chi_tra`                | Tesseract language code         |
-| `OCR_DPI`          | `200`                    | OCR render DPI                  |
-| `POPPLER_PATH`     | (auto-detect if bundled) | Path to Poppler `bin` (for OCR) |
+| Variable           | Default                                        | Description                       |
+| ------------------ | ---------------------------------------------- | --------------------------------- |
+| `EMBED_MODEL_PATH` | `./bge-large-zh-v1.5`                          | Local embedding model directory   |
+| `OLLAMA_MODEL`     | `deepseek-r1:14b`                              | Ollama model name                 |
+| `CHUNK_SIZE`       | `600`                                          | Chunk size for indexing           |
+| `CHUNK_OVERLAP`    | `100`                                          | Chunk overlap                     |
+| `TOP_K`            | `5`                                            | Retrieved chunks per question     |
+| `OCR_LANG`         | `chi_tra`                                      | Tesseract language code           |
+| `OCR_DPI`          | `200`                                          | OCR render DPI                    |
+| `POPPLER_PATH`     | (auto-detect if bundled)                       | Path to Poppler `bin` (for OCR)   |
+| `TESSERACT_CMD`    | `C:\Program Files\Tesseract-OCR\tesseract.exe` | Path to `tesseract.exe` (Windows) |
+| `TESSDATA_PREFIX`  | `C:\Program Files\Tesseract-OCR\tessdata`      | Path to tessdata folder (Windows) |
 
 ---
 
-## OCR Notes
+## 🧾 OCR Notes
 
 OCR runs only if **PyMuPDF** extracts almost no text (typical for scanned PDFs).
 
@@ -189,8 +195,16 @@ If you’re on macOS or Linux, update the constants in `app.py` or set your envi
 
 ---
 
-# 📡API Endpoints
-## 📤POST /upload
+# 📡 API Endpoints
+
+| Method | Path      | Description                           |
+| ------ | --------- | ------------------------------------- |
+| `POST` | `/upload` | Upload a PDF and build an index       |
+| `POST` | `/chat`   | Ask questions using retrieved context |
+| `POST` | `/clear`  | Clear chat and remove current data    |
+| `GET`  | `/`       | Frontend                              |
+
+## 📤 POST /upload
 
 Upload a PDF (multipart/form-data with field name file).
 
@@ -204,9 +218,7 @@ curl -F "file=@your.pdf" http://127.0.0.1:8000/upload
 { "ok": true, "name": "your.pdf", "id": "abcdef123456" }
 ```
 
----
-
-## 💬POST /chat
+## 💬 POST /chat
 
 **Send messages:**
 ```
@@ -220,9 +232,7 @@ curl -X POST http://127.0.0.1:8000/chat \
 { "reply": "..." }
 ```
 
----
-
-## 🧹POST /clear
+## 🧹 POST /clear
 
 Clears current PDF + deletes its stored files/vectors
 
@@ -233,7 +243,7 @@ curl -X POST http://127.0.0.1:8000/clear
 
 ---
 
-# 🛠️Troubleshooting
+# 🛠️ Troubleshooting
 
 “No PDF indexed yet. Upload a PDF first.”
 Upload a PDF via the UI or POST /upload before chatting.
@@ -246,10 +256,10 @@ That’s normal. Try smaller PDFs first or reduce CHUNK_SIZE/TOP_K.
 
 ---
 
-# 🛡️Security Notes
+# 🛡️ Security Notes
 
 This app accepts file uploads and runs a local LLM workflow. If you deploy it beyond localhost, add authentication and restrict file handling.
 
-# License
+# 📜 License
+MIT License. See `LICENSE`.
 
-For reference only. 
