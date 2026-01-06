@@ -261,6 +261,7 @@ That’s normal. Try smaller PDFs first or reduce CHUNK_SIZE/TOP_K.
 This app accepts file uploads and runs a local LLM workflow. If you deploy it beyond localhost, add authentication and restrict file handling.
 
 # 📜 License
-For reference only. All rights reserved.
+MIT License. See `LICENSE`.
+
 
 
