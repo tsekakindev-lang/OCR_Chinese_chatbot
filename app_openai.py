@@ -26,6 +26,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+print("RUNNING app.py FROM:", __file__)
 
 # =========================
 # Settings / Paths
