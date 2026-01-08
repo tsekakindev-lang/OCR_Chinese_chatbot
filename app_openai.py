@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,6 @@ from langchain_core.prompts import PromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-print("RUNNING app.py FROM:", __file__)
 
 # =========================
 # Settings / Paths
@@ -110,7 +110,6 @@ def _ensure_ocr_ready() -> None:
     if pytesseract is None or convert_from_path is None or pdfinfo_from_path is None:
         raise RuntimeError("OCR dependencies are missing (pytesseract/pdf2image/poppler).")
 
-    # Configure Windows defaults (only if OCR is invoked)
     if SETTINGS.tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = SETTINGS.tesseract_cmd
     if SETTINGS.tessdata_prefix and "TESSDATA_PREFIX" not in os.environ:
@@ -166,6 +165,18 @@ def load_pdf_to_page_docs(pdf_path: str) -> list[LangChainDocument]:
     return docs
 
 
+def _normalize_pages_1_based(docs: list[LangChainDocument]) -> None:
+    """
+    Some loaders store pages as 0-based indices. Normalize to 1-based for human citations.
+    """
+    pages = [d.metadata.get("page") for d in docs if isinstance(d.metadata.get("page"), int)]
+    if pages and min(pages) == 0:
+        for d in docs:
+            p = d.metadata.get("page")
+            if isinstance(p, int):
+                d.metadata["page"] = p + 1
+
+
 def split_docs(page_docs: list[LangChainDocument]) -> list[LangChainDocument]:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=SETTINGS.chunk_size,
@@ -177,7 +188,6 @@ def split_docs(page_docs: list[LangChainDocument]) -> list[LangChainDocument]:
 def build_vectorstore(chunks: list[LangChainDocument], chroma_dir: str) -> Chroma:
     embeddings = HuggingFaceEmbeddings(model_name=SETTINGS.embed_model_path)
 
-    # Ensure a clean collection inside this persistent folder
     client = chromadb.PersistentClient(path=chroma_dir)
     try:
         client.delete_collection(SETTINGS.collection_name)
@@ -193,14 +203,89 @@ def build_vectorstore(chunks: list[LangChainDocument], chroma_dir: str) -> Chrom
 
 
 # =========================
-# Prompt shaping
+# Question intent heuristics + doc-card
 # =========================
+
+_CHAPTER_RE = re.compile(r"第[\d一二三四五六七八九十百千]+章")
+
+def is_overview_q(q: str) -> bool:
+    ql = (q or "").lower()
+    return any(k in ql for k in [
+        "介紹", "简介", "簡介", "概述", "總覽", "总览", "這本書", "这本书", "這份文件", "这份文件",
+        "what is", "about this", "summary", "overview"
+    ])
+
+def is_structure_q(q: str) -> bool:
+    q0 = q or ""
+    ql = q0.lower()
+    return (
+        any(k in ql for k in ["幾章", "几章", "章節", "章节", "架構", "架构", "chapter", "chapters", "contents", "目錄", "目录"])
+        or bool(_CHAPTER_RE.search(q0))
+    )
+
+OVERVIEW_MARKERS = [
+    "摘要","Abstract","前言","序","導論","绪论","引言","introduction",
+    "研究目的","目的","方法","method","研究方法","結論","结论","總結","总结",
+    "本文","本書","本书","主要貢獻","主要贡献","contribution",
+    "第一章","第二章","第三章","第四章","第五章","chapter 1","chapter"
+]
+
+def build_doc_card(page_docs: list[LangChainDocument], head_pages: int = 10, max_chars: int = 7000) -> Optional[LangChainDocument]:
+    """
+    Build a synthetic Document from:
+    - first N pages (often preface/introduction)
+    - pages containing overview markers (摘要/前言/第一章...)
+    Helps retrieval for “介紹/幾章/架構” questions.
+    """
+    head = page_docs[:head_pages]
+    hits = [d for d in page_docs if any(m in (d.page_content or "") for m in OVERVIEW_MARKERS)]
+
+    seen_pages = set()
+    picked: list[LangChainDocument] = []
+    for d in head + hits:
+        p = d.metadata.get("page")
+        if p in seen_pages:
+            continue
+        seen_pages.add(p)
+        picked.append(d)
+
+    out: list[str] = []
+    total = 0
+    for d in picked:
+        p = d.metadata.get("page", "?")
+        txt = (d.page_content or "").strip()
+        if not txt:
+            continue
+        chunk = f"[p.{p}]\n{txt}"
+        if total + len(chunk) > max_chars:
+            break
+        out.append(chunk)
+        total += len(chunk)
+
+    if not out:
+        return None
+
+    return LangChainDocument(
+        page_content="【DOC_CARD｜用于回答“介绍/概述/这份文件在讲什么”】【仅摘录原文】\n\n" + "\n\n---\n\n".join(out),
+        metadata={"type": "doc_card", "page": 1, "source": page_docs[0].metadata.get("source") if page_docs else ""},
+    )
+
+
+# =========================
+# Prompt shaping (improved)
+# =========================
+
+NOT_FOUND = "文档中未找到相关内容。"
 
 PROMPT = PromptTemplate(
     template=(
         "你是一个严谨但表达自然的助手。请严格根据【上下文】回答问题。\n"
-        "- 如果上下文中没有相关信息，请直接回答：“文档中未找到相关内容。”\n"
-        "- 用中文回答。\n\n"
+        "规则：\n"
+        "1) 只写上下文出现的内容；不要补写、不要推测。\n"
+        f"2) 若上下文完全没有相关信息：只回答“{NOT_FOUND}”。\n"
+        "3) 当用户问“介绍/概述/summary/overview”：用 3–6 个要点概述；如出现章节线索再附结构要点。\n"
+        "4) 当用户问“目录/幾章/章節/架構”：优先提取带“第一章/第二章/…/第X章”或类似结构线索的句子，并用要点列出。\n"
+        "5) 用中文回答。\n\n"
         "【上下文】\n{context}\n\n"
         "【对话历史】\n{chat_history}\n\n"
         "【用户问题】\n{question}\n\n"
@@ -233,12 +318,19 @@ def messages_to_history_text(messages: list["ChatMessage"], max_turns: int) -> s
 
 
 def format_docs(docs: list[LangChainDocument], max_chars: int) -> str:
+    """
+    Build the context block:
+    - prefixes with [p.X] for better grounding
+    - truncates by a total character budget
+    """
     parts: list[str] = []
     total = 0
     for d in docs or []:
-        chunk = (d.page_content or "").strip()
-        if not chunk:
+        txt = (d.page_content or "").strip()
+        if not txt:
             continue
+        page = d.metadata.get("page", "?")
+        chunk = f"[p.{page}]\n{txt}"
         if total + len(chunk) > max_chars:
             break
         parts.append(chunk)
@@ -246,12 +338,28 @@ def format_docs(docs: list[LangChainDocument], max_chars: int) -> str:
     return "\n\n".join(parts)
 
 
-def extract_sources(docs: list[LangChainDocument], limit: int = 5) -> str:
-    sources: list[str] = []
-    for d in (docs or [])[:limit]:
-        page = d.metadata.get("page", "?")
-        sources.append(f"p.{page}")
-    return ", ".join(sources)
+def _dedupe_docs(docs: list[LangChainDocument]) -> list[LangChainDocument]:
+    seen = set()
+    out: list[LangChainDocument] = []
+    for d in docs or []:
+        key = (d.metadata.get("type"), d.metadata.get("page"), (d.page_content or "")[:180])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
+
+def _pages_sources(docs: list[LangChainDocument], max_pages: int = 10) -> str:
+    pages: list[int] = []
+    for d in (docs or [])[:20]:
+        if d.metadata.get("type") == "doc_card":
+            continue
+        p = d.metadata.get("page")
+        if isinstance(p, int):
+            pages.append(p)
+    pages = sorted(set(pages))[:max_pages]
+    return ", ".join(f"p.{p}" for p in pages)
 
 
 # =========================
@@ -260,13 +368,15 @@ def extract_sources(docs: list[LangChainDocument], limit: int = 5) -> str:
 
 @dataclass
 class RagComponents:
+    vectorstore: Chroma
     retriever: Any
+    retriever_overview: Any
+    retriever_structure: Any
     prompt: PromptTemplate
 
 
 class AppState:
     """Single-active-document state with a thread lock."""
-
     def __init__(self) -> None:
         self._lock = Lock()
         self.pdf_path: Optional[str] = None
@@ -305,11 +415,29 @@ def build_rag_components(vectorstore: Chroma) -> RagComponents:
         search_type="mmr",
         search_kwargs={"k": SETTINGS.top_k, "fetch_k": 40, "lambda_mult": 0.5},
     )
-    return RagComponents(retriever=retriever, prompt=PROMPT)
+
+    retriever_overview = vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": max(SETTINGS.top_k, 12), "fetch_k": 60, "lambda_mult": 0.5},
+    )
+
+    retriever_structure = vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": max(SETTINGS.top_k, 12), "fetch_k": 60, "lambda_mult": 0.5},
+    )
+
+    return RagComponents(
+        vectorstore=vectorstore,
+        retriever=retriever,
+        retriever_overview=retriever_overview,
+        retriever_structure=retriever_structure,
+        prompt=PROMPT,
+    )
 
 
 def build_index_sync(pdf_path: str, chroma_dir: str) -> None:
     page_docs = load_pdf_to_page_docs(pdf_path)
+    _normalize_pages_1_based(page_docs)
 
     # If PDF is scanned, native extraction may be almost empty -> OCR fallback
     total_chars = sum(len((d.page_content or "").strip()) for d in page_docs)
@@ -317,6 +445,12 @@ def build_index_sync(pdf_path: str, chroma_dir: str) -> None:
         page_docs = ocr_pdf_to_page_docs(pdf_path)
         if not page_docs:
             raise RuntimeError("PDF looks scanned but OCR returned empty text.")
+
+    # Build doc-card to help overview/structure questions
+    doc_card = build_doc_card(page_docs, head_pages=10)
+    if doc_card:
+        doc_card.metadata.setdefault("source", pdf_path)
+        page_docs.append(doc_card)
 
     chunks = split_docs(page_docs)
     vectorstore = build_vectorstore(chunks, chroma_dir)
@@ -402,25 +536,78 @@ async def chat(req: ChatRequest) -> dict[str, Any]:
     question = user_msgs[-1].content.strip()
     chat_history = messages_to_history_text(req.messages, max_turns=SETTINGS.max_history_turns)
 
+    OVERVIEW_EXPANSIONS = [
+        "摘要 前言 引言 结论 总结 目的 方法 主要贡献 本书 本文",
+        "what is this document about abstract introduction conclusion contribution",
+    ]
+    STRUCTURE_EXPANSIONS = [
+        "本書主要分為 本书主要分为 第一章 第二章 第三章 第四章 第五章 章節 章节 架構 架构 目录 目錄",
+        "chapter 1 chapter 2 chapter 3 chapter 4 chapter 5 contents table of contents",
+    ]
+
+    def _retrieve_many(r, queries: list[str]) -> list[LangChainDocument]:
+        got: list[LangChainDocument] = []
+        for q in queries:
+            try:
+                got.extend(r.get_relevant_documents(q))
+            except Exception:
+                got.extend(r.invoke(q))
+        return got
+
     def run_rag() -> str:
-        # Retrieval (prefer newer API, fallback for older)
+        # Mode selection
+        if is_structure_q(question):
+            mode = "structure"
+        elif is_overview_q(question):
+            mode = "overview"
+        else:
+            mode = "normal"
+
+        # Try to fetch doc_card directly (if supported)
+        doc_card_docs: list[LangChainDocument] = []
         try:
-            docs = rag.retriever.invoke(question)
+            doc_card_docs = rag.vectorstore.similarity_search("DOC_CARD", k=2, filter={"type": "doc_card"})
+        except TypeError:
+            doc_card_docs = rag.vectorstore.similarity_search("DOC_CARD", k=2)
         except Exception:
-            docs = rag.retriever.get_relevant_documents(question)
+            doc_card_docs = []
 
-        context_text = format_docs(docs, max_chars=SETTINGS.max_context_chars)
-        prompt_text = rag.prompt.format(context=context_text, chat_history=chat_history, question=question)
+        if mode == "overview":
+            docs = doc_card_docs + _retrieve_many(rag.retriever_overview, [question] + OVERVIEW_EXPANSIONS)
+        elif mode == "structure":
+            docs = doc_card_docs + _retrieve_many(rag.retriever_structure, [question] + STRUCTURE_EXPANSIONS)
+        else:
+            docs = _retrieve_many(rag.retriever, [question])
 
-        resp = openai_client.responses.create(
-            model=SETTINGS.openai_model,
-            input=prompt_text,
-        )
-        answer = (resp.output_text or "").strip()
+        docs = _dedupe_docs(docs)
 
-        sources = extract_sources(docs)
+        def _answer_once(ctx_docs: list[LangChainDocument]) -> tuple[str, list[LangChainDocument]]:
+            context_text = format_docs(ctx_docs, max_chars=SETTINGS.max_context_chars)
+            prompt_text = rag.prompt.format(context=context_text, chat_history=chat_history, question=question)
+
+            resp = openai_client.responses.create(
+                model=SETTINGS.openai_model,
+                input=prompt_text,
+            )
+            ans = (resp.output_text or "").strip()
+            return ans, ctx_docs
+
+        answer, used_docs = _answer_once(docs)
+
+        # Second-pass fallback: broaden once if NOT_FOUND
+        if answer.startswith(NOT_FOUND):
+            broader = doc_card_docs + _retrieve_many(
+                rag.retriever_overview, [question] + OVERVIEW_EXPANSIONS + STRUCTURE_EXPANSIONS
+            )
+            broader = _dedupe_docs(broader)
+            answer2, used_docs2 = _answer_once(broader)
+            if not answer2.startswith(NOT_FOUND):
+                answer, used_docs = answer2, used_docs2
+
+        sources = _pages_sources(used_docs, max_pages=10)
         if sources:
             answer = answer.rstrip() + "\n\nSources: " + sources
+
         return answer
 
     reply = await asyncio.to_thread(run_rag)
