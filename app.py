@@ -199,6 +199,72 @@ def ocr_pdf_to_page_docs(
 
     return page_docs
 
+import re
+_CHAPTER_RE = re.compile(r"第[\d一二三四五六七八九十百千]+章")
+
+def is_overview_q(q: str) -> bool:
+    q = (q or "").lower()
+    return any(k in q for k in [
+        "介紹","简介","簡介","概述","總覽","总览","這本書","这本书","這份文件","这份文件",
+        "what is","about this","summary","overview"
+    ])
+
+def is_structure_q(q: str) -> bool:
+    q0 = q or ""
+    ql = q0.lower()
+    return (
+        any(k in ql for k in ["幾章","几章","章節","章节","架構","架构","chapter","chapters","contents","目錄","目录"])
+        or bool(_CHAPTER_RE.search(q0))
+    )
+
+def _normalize_pages_1_based(docs: list[LangChainDocument]) -> None:
+    pages = [d.metadata.get("page") for d in docs if isinstance(d.metadata.get("page"), int)]
+    if pages and min(pages) == 0:
+        for d in docs:
+            p = d.metadata.get("page")
+            if isinstance(p, int):
+                d.metadata["page"] = p + 1
+
+
+OVERVIEW_MARKERS = [
+    "摘要","Abstract","前言","序","導論","绪论","引言","introduction",
+    "研究目的","目的","方法","method","研究方法","結論","结论","總結","总结",
+    "本文","本書","本书","主要貢獻","主要贡献","contribution",
+    "第一章","第二章","第三章","第四章","第五章","chapter 1","chapter"
+]
+
+def build_doc_card(page_docs, head_pages=10, max_chars=7000):
+    head = page_docs[:head_pages]
+    hits = [d for d in page_docs if any(m in (d.page_content or "") for m in OVERVIEW_MARKERS)]
+    # de-dupe by page
+    seen = set()
+    picked = []
+    for d in head + hits:
+        p = d.metadata.get("page")
+        if p in seen: 
+            continue
+        seen.add(p)
+        picked.append(d)
+
+    out, total = [], 0
+    for d in picked:
+        p = d.metadata.get("page", "?")
+        txt = (d.page_content or "").strip()
+        if not txt:
+            continue
+        chunk = f"[p.{p}]\n{txt}"
+        if total + len(chunk) > max_chars:
+            break
+        out.append(chunk)
+        total += len(chunk)
+
+    if not out:
+        return None
+
+    return LangChainDocument(
+        page_content="【DOC_CARD｜用于回答“介绍/概述/这份文件在讲什么”】【仅摘录原文】\n\n" + "\n\n---\n\n".join(out),
+        metadata={"type": "doc_card", "page": 1}
+    )
 
 # ---------------------------
 # Vectorstore build
@@ -265,25 +331,19 @@ def _messages_to_history_text(messages: list["ChatMessage"], max_turns: int = 12
     # Only keep the last N turns (approx: 2 lines per turn)
     return "\n".join(lines[-max_turns * 2 :])
 
-
 def _format_docs(docs: list[LangChainDocument], max_chars: int = 12000) -> str:
-    """
-    Join retrieved documents into one context string, with a safety cap
-    to avoid sending extremely large prompts to the LLM.
-    """
-    parts = []
-    total = 0
+    parts, total = [], 0
     for d in docs or []:
-        chunk = (d.page_content or "").strip()
-        if not chunk:
+        txt = (d.page_content or "").strip()
+        if not txt:
             continue
+        page = d.metadata.get("page", "?")
+        chunk = f"[p.{page}]\n{txt}"
         if total + len(chunk) > max_chars:
             break
         parts.append(chunk)
         total += len(chunk)
-
     return "\n\n".join(parts)
-
 
 # ---------------------------
 # RAG components (retriever + llm + prompt)
@@ -300,6 +360,14 @@ def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
         search_type="mmr",
         search_kwargs={"k": TOP_K, "fetch_k": 40, "lambda_mult": 0.5},
     )
+    retriever_overview = vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": max(TOP_K, 12), "fetch_k": 60, "lambda_mult": 0.5},
+    )
+    retriever_structure = vectorstore.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": max(TOP_K, 12), "fetch_k": 60, "lambda_mult": 0.5},
+    )
 
     llm = OllamaLLM(model=OLLAMA_MODEL)
 
@@ -307,8 +375,9 @@ def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
     prompt = PromptTemplate(
         template=(
             "你是一个严谨但表达自然的助手。请严格根据【上下文】回答问题。\n"
-            "- 如果上下文中没有相关信息，请直接回答：“文档中未找到相关内容。”\n"
-            "- 用中文回答。\n\n"
+            "当用户问“介绍/概述/summary/overview”：用 3–6 个要点概述；如出现章节线索再附结构要点。\n"
+            "只写上下文出现的内容；若只找到部分，标注“其余未在上下文出现”；不得补写。\n"
+            "若上下文完全没有相关信息：回答“文档中未找到相关内容。”\n\n"
             "【上下文】\n{context}\n\n"
             "【对话历史】\n{chat_history}\n\n"
             "【用户问题】\n{question}\n\n"
@@ -317,25 +386,26 @@ def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
         input_variables=["context", "chat_history", "question"],
     )
 
-    return {"retriever": retriever, "llm": llm, "prompt": prompt}
+    return {
+        "vectorstore": vectorstore,
+        "retriever": retriever,
+        "retriever_overview": retriever_overview,
+        "retriever_structure": retriever_structure,
+        "llm": llm,
+        "prompt": prompt,
+    }
 
 
 # ---------------------------
 # Index build (runs in a thread via asyncio.to_thread)
 # ---------------------------
 def _build_sync(pdf_path: str, chroma_dir: str) -> None:
-    """
-    Build the entire RAG state synchronously:
-    1) Extract text via PyMuPDFLoader
-    2) If almost empty -> OCR fallback
-    3) Build vectorstore (Chroma)
-    4) Build retriever/llm/prompt and store in global STATE
-    """
     # 1) Try native text extraction
     page_docs = load_pdf_to_page_docs(pdf_path)
+    _normalize_pages_1_based(page_docs)
 
     # If the PDF is scanned, PyMuPDFLoader will often extract almost nothing.
-    total_chars = sum(len(d.page_content.strip()) for d in page_docs)
+    total_chars = sum(len(((d.page_content or "").strip())) for d in page_docs)
     if total_chars < 200:
         # 2) OCR fallback (best effort)
         try:
@@ -352,17 +422,23 @@ def _build_sync(pdf_path: str, chroma_dir: str) -> None:
                 "This PDF may be image-only or the OCR language/config is incorrect."
             )
 
+    # ✅ Now page_docs is final (native or OCR): build doc_card
+    doc_card = build_doc_card(page_docs, head_pages=10)
+    if doc_card:
+        doc_card.metadata.setdefault("source", pdf_path)
+        page_docs.append(doc_card)
+
     # 3) Build + persist embeddings
     vectorstore = build_vectorstore(page_docs, chroma_dir)
 
     # 4) Prepare retriever + llm + prompt
     rag = build_rag_components(vectorstore)
 
-    # Save active state (single active PDF at a time)
     with STATE_LOCK:
         STATE["pdf_path"] = pdf_path
         STATE["chroma_dir"] = chroma_dir
         STATE["rag"] = rag
+
 
 
 # ---------------------------
@@ -434,14 +510,6 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    """
-    Main chat endpoint:
-    - reads latest user question
-    - retrieves relevant chunks from Chroma
-    - formats prompt (context + history + question)
-    - calls Ollama LLM
-    - returns answer + page source hints
-    """
     # Get current active RAG components
     with STATE_LOCK:
         rag = STATE.get("rag")
@@ -458,56 +526,119 @@ async def chat(req: ChatRequest):
     # Compact history for the prompt (NOT used for retrieval)
     chat_history = _messages_to_history_text(req.messages, max_turns=12)
 
-    retriever = rag["retriever"]
-    llm = rag["llm"]
-    prompt = rag["prompt"]
+    NOT_FOUND = "文档中未找到相关内容。"
 
-    # Run retrieval+generation in a background thread (sync calls)
-    def run_rag():
-        # Retrieve using ONLY the current question (better than mixing history into retrieval)
+    OVERVIEW_EXPANSIONS = [
+        "摘要 前言 引言 结论 总结 目的 方法 主要贡献 本书 本文",
+        "what is this document about abstract introduction conclusion contribution",
+    ]
+    STRUCTURE_EXPANSIONS = [
+        "本書主要分為 本书主要分为 第一章 第二章 第三章 第四章 第五章",
+        "chapter 1 chapter 2 chapter 3 chapter 4 chapter 5",
+    ]
+
+    def _dedupe_docs(docs: list[LangChainDocument]) -> list[LangChainDocument]:
+        seen, out = set(), []
+        for d in docs or []:
+            key = (d.metadata.get("type"), d.metadata.get("page"), (d.page_content or "")[:180])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(d)
+        return out
+
+    def _retrieve_many(r, queries: list[str]) -> list[LangChainDocument]:
+        got = []
+        for q in queries:
+            try:
+                got.extend(r.get_relevant_documents(q))
+            except Exception:
+                got.extend(r.invoke(q))
+        return got
+
+    def run_rag_sync() -> str:
+        vectorstore = rag["vectorstore"]
+        r_normal = rag["retriever"]
+        r_overview = rag["retriever_overview"]
+        r_structure = rag["retriever_structure"]
+        llm = rag["llm"]
+        prompt = rag["prompt"]
+
+        # ✅ priority: structure > overview > normal
+        if is_structure_q(question):
+            mode = "structure"
+        elif is_overview_q(question):
+            mode = "overview"
+        else:
+            mode = "normal"
+
+        # Try to fetch doc_card directly (filter)
+        doc_card_docs = []
         try:
-            docs = retriever.get_relevant_documents(question)
+            doc_card_docs = vectorstore.similarity_search("DOC_CARD", k=1, filter={"type": "doc_card"})
+        except TypeError:
+            # older/variant API: no filter support
+            doc_card_docs = vectorstore.similarity_search("DOC_CARD", k=1)
         except Exception:
-            # Some retrievers use .invoke() in newer LangChain versions
-            docs = retriever.invoke(question)
+            doc_card_docs = []
 
-        context_text = _format_docs(docs)
-        prompt_text = prompt.format(
-            context=context_text,
-            chat_history=chat_history,
-            question=question
-        )
 
-        answer = (llm.invoke(prompt_text) or "").strip()
+        if mode == "overview":
+            docs = doc_card_docs + _retrieve_many(r_overview, [question] + OVERVIEW_EXPANSIONS)
+        elif mode == "structure":
+            docs = doc_card_docs + _retrieve_many(r_structure, [question] + STRUCTURE_EXPANSIONS)
+        else:
+            docs = _retrieve_many(r_normal, [question])
 
-        # Attach quick sources (page numbers) from metadata, best-effort
-        sources = []
-        for d in (docs or [])[:5]:
-            page = d.metadata.get("page", "?")
-            sources.append(f"p.{page}")
-        if sources:
-            answer = answer.rstrip() + "\n\nSources: " + ", ".join(sources)
+        docs = _dedupe_docs(docs)
+
+        def _answer_with(docs_for_ctx: list[LangChainDocument]) -> tuple[str, list[LangChainDocument]]:
+            context_text = _format_docs(docs_for_ctx)
+            prompt_text = prompt.format(context=context_text, chat_history=chat_history, question=question)
+            ans = (llm.invoke(prompt_text) or "").strip()
+            return ans, docs_for_ctx
+
+        answer, used_docs = _answer_with(docs)
+
+        # 2-pass fallback: broaden once if NOT_FOUND
+        if answer.startswith(NOT_FOUND):
+            broader = doc_card_docs + _retrieve_many(
+                r_overview, [question] + OVERVIEW_EXPANSIONS + STRUCTURE_EXPANSIONS
+            )
+            broader = _dedupe_docs(broader)
+            answer2, used_docs2 = _answer_with(broader)
+            if not answer2.startswith(NOT_FOUND):
+                answer, used_docs = answer2, used_docs2
+
+
+        # sources
+        pages = []
+        for d in used_docs[:12]:
+            if d.metadata.get("type") == "doc_card":
+                continue
+            p = d.metadata.get("page")
+            if isinstance(p, int):
+                pages.append(p)
+        pages = sorted(set(pages))[:10]
+        if pages:
+            answer = answer.rstrip() + "\n\nSources: " + ", ".join(f"p.{p}" for p in pages)
 
         return answer
 
-    reply = await asyncio.to_thread(run_rag)
+    reply = await asyncio.to_thread(run_rag_sync)
     return {"reply": reply}
 
-
 @app.post("/clear")
-def clear():
-    """
-    Clears the active PDF + vector DB for a “fresh start”.
-    Also deletes the saved PDF file and its chroma directory on disk (best effort).
-    """
+def clear() -> dict[str, Any]:
+    # 1) snapshot paths + reset in-memory state (thread-safe)
     with STATE_LOCK:
         pdf_path = STATE.get("pdf_path")
         chroma_dir = STATE.get("chroma_dir")
         STATE["pdf_path"] = None
         STATE["chroma_dir"] = None
-        STATE["rag"] = None   # ✅ correct key name (you store rag dict)
+        STATE["rag"] = None
 
-    # best-effort cleanup (ignore failures)
+    # 2) best-effort delete local artifacts
     if pdf_path and os.path.exists(pdf_path):
         try:
             os.remove(pdf_path)
