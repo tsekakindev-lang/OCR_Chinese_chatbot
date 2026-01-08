@@ -1,0 +1,296 @@
+/* Make the root document and body take full height so 100vh layouts behave predictably */
+html, body { height: 100%; }
+
+/* Dark page background for the whole app */
+body { background: #0b1020; }
+
+/* ---------------------------
+   Fullscreen layout
+   --------------------------- */
+
+/* The overall shell fills the entire viewport */
+.app-shell { height: 100vh; width: 100vw; }
+
+/* ---------------------------
+   Sidebar
+   --------------------------- */
+
+.sidebar {
+    /* Semi-transparent glassy background */
+    background: rgba(255,255,255,0.06);
+
+    /* Subtle divider line between sidebar and main */
+    border-right: 1px solid rgba(255,255,255,0.12);
+
+    /* “Glassmorphism” blur effect (works best with transparency) */
+    backdrop-filter: blur(10px);
+
+    /* Fixed sidebar width */
+    width: 300px;
+
+    /* Prevent flexbox from resizing the sidebar:
+       - grow: 0 (don’t expand)
+       - shrink: 0 (don’t shrink)
+       - basis: 300px (preferred size) */
+    flex: 0 0 300px;
+
+    /* Hard constraints to keep it fixed */
+    min-width: 300px;
+    max-width: 300px;
+
+    /* Hide horizontal overflow to avoid side-scrolling */
+    overflow-x: hidden;
+
+    /* Ensure it layers above the main if overlap occurs */
+    position: relative;
+    z-index: 10;
+}
+
+/* Divider below the “brand” header in the sidebar */
+.sidebar .brand {
+    border-bottom: 1px solid rgba(255,255,255,0.10);
+}
+
+/* The “Selected PDF” pill/badge styling */
+.sidebar .pill {
+    /* Block allows full-width behavior and wrapping */
+    display: block;
+    width: 100%;
+
+    /* This section intentionally disables the classic single-line ellipsis behavior */
+    overflow: visible;
+    text-overflow: clip;
+
+    /* Allow multi-line wrapping */
+    white-space: normal;
+
+    /* Break long words/filenames so they wrap instead of overflow */
+    word-break: break-word;
+
+    /* Even more aggressive wrapping for very long tokens */
+    overflow-wrap: anywhere;
+}
+
+/* Allow buttons inside flex/grid containers to shrink properly */
+.sidebar .btn {
+    min-width: 0;
+}
+
+/* Label inside sidebar buttons:
+   - prevent label from forcing layout wider than container
+   - show ellipsis if it’s too long */
+.sidebar .btn .btn-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Tips styling (dark UI friendly) */
+.tips { line-height: 1.4; }
+
+.tips .tip-badge{
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+
+.tips .tip-code{
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: .45rem;
+  padding: .1rem .35rem;
+}
+
+.tips .tip-keyword{
+  background: rgba(245,158,11,0.16); /* amber-like */
+  border-color: rgba(245,158,11,0.25);
+}
+
+.tips .tip-label{
+  font-weight: 600;
+  color: rgba(255,255,255,0.85);
+}
+
+
+/* ---------------------------
+   Custom secondary outline button (blue)
+   --------------------------- */
+
+.btn-outline-blue {
+    /* Transparent background so it looks like an outline button */
+    background: transparent;
+
+    /* Blue text */
+    color: #2563eb;              /* blue-600 */
+
+    /* Blue outline border */
+    border: 1.5px solid #2563eb;
+}
+
+/* Hover: faint blue tint */
+.btn-outline-blue:hover {
+    background: rgba(37, 99, 235, 0.08);
+}
+
+/* Active: slightly stronger tint */
+.btn-outline-blue:active {
+    background: rgba(37, 99, 235, 0.15);
+}
+
+/* Disabled: reduce visibility and show “not allowed” cursor */
+.btn-outline-blue:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ---------------------------
+   Main content
+   --------------------------- */
+
+.main {
+    /* Slight translucent background similar to sidebar */
+    background: rgba(255,255,255,0.04);
+
+    /* Glass blur effect */
+    backdrop-filter: blur(10px);
+
+    /* Prevent flex children from overflowing horizontally */
+    min-width: 0;
+
+    /* Ensure main stays behind sidebar if they overlap */
+    position: relative;
+    z-index: 1;
+
+    /* Hide accidental horizontal overflow */
+    overflow-x: hidden;
+}
+
+/* Chat scroll area */
+.chat-area {
+    /* Grow to fill available space vertically */
+    flex: 1 1 auto;
+
+    /* Vertical scrolling for chat messages */
+    overflow-y: auto;
+
+    /* Avoid horizontal scroll (bubbles wrap) */
+    overflow-x: hidden;
+
+    /* Inner spacing */
+    padding: 1rem;
+
+    /* Slight dark overlay behind chat */
+    background: rgba(0,0,0,0.18);
+
+    /* Top/bottom separators */
+    border-top: 1px solid rgba(255,255,255,0.10);
+    border-bottom: 1px solid rgba(255,255,255,0.10);
+}
+
+/* ---------------------------
+   Chat bubbles
+   --------------------------- */
+
+.bubble {
+    /* Limit width so bubbles don’t span full screen */
+    max-width: 78%;
+
+    /* Comfortable padding */
+    padding: .75rem .85rem;
+
+    /* Rounded corners */
+    border-radius: 1rem;
+
+    /* Subtle border */
+    border: 1px solid rgba(255,255,255,0.14);
+
+    /* Preserve line breaks from message text */
+    white-space: pre-wrap;
+
+    /* Wrap long words/URLs */
+    word-wrap: break-word;
+
+    /* White text by default */
+    color: #fff;
+}
+
+/* User bubble: blue tint and pushed to the right */
+.bubble.user {
+    background: rgba(13,110,253,0.20);
+    border-color: rgba(13,110,253,0.35);
+
+    /* Align to right within the flex row */
+    margin-left: auto;
+}
+
+/* Assistant bubble: neutral translucent gray */
+.bubble.assistant {
+    background: rgba(255,255,255,0.08);
+}
+
+/* System bubble: green tint for status messages */
+.bubble.system {
+    background: rgba(25,135,84,0.14);
+    border-color: rgba(25,135,84,0.28);
+
+    /* Slightly smaller than normal text */
+    font-size: .95rem;
+
+    /* Slight transparency */
+    opacity: .95;
+
+    /* Keep consistent white text */
+    color: #fff;
+}
+
+/* Prevent textarea from being resizable (keeps layout stable) */
+textarea { resize: none; }
+
+/* ---------------------------
+   Typing / thinking animation
+   --------------------------- */
+
+/* Container for three animated dots */
+.typing {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 1.2rem;
+}
+
+/* Individual dot styling */
+.typing .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+
+    /* Bright white dot */
+    background: rgba(255,255,255,0.85);
+
+    /* Bounce animation */
+    animation: typingBounce 1.2s infinite ease-in-out;
+}
+
+/* Stagger the animation timings so dots bounce in sequence */
+.typing .dot:nth-child(2) { animation-delay: 0.15s; }
+.typing .dot:nth-child(3) { animation-delay: 0.30s; }
+
+/* Keyframes: bounce up mid-cycle and fade in/out */
+@keyframes typingBounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+    40% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ---------------------------
+   Mobile layout
+   --------------------------- */
+
+/* On smaller screens: sidebar becomes full-width (stack-like behavior) */
+@media (max-width: 992px) {
+    .sidebar{
+        width: 100%;
+        flex: 0 0 100%;
+        min-width: 0;
+        max-width: none;
+    }
+}
