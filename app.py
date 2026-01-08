@@ -59,9 +59,13 @@ except Exception:  # pragma: no cover
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 os.environ["TESSDATA_PREFIX"] = r"C:\Program Files\Tesseract-OCR\tessdata"
 
+from dotenv import load_dotenv
+load_dotenv()  # loads .env into environment variables
+
 # ---------------------------
 # CONFIG
 # ---------------------------
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Where your front-end files live (index.html, app.js, style.css under /static)
@@ -83,7 +87,12 @@ os.makedirs(CHROMA_BASE_DIR, exist_ok=True)
 EMBED_MODEL_PATH = os.getenv("EMBED_MODEL_PATH", os.path.join(APP_DIR, "bge-large-zh-v1.5"))
 
 # LLM served by Ollama
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
+# OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
+
+# Replace the local LLM with OpenAI
+from openai import OpenAI
+openai_client = OpenAI()  # reads OPENAI_API_KEY from env
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Chunking parameters for building the vectorstore
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
@@ -288,22 +297,47 @@ def _format_docs(docs: list[LangChainDocument], max_chars: int = 12000) -> str:
 # ---------------------------
 # RAG components (retriever + llm + prompt)
 # ---------------------------
+# Local LLM
+# def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
+#     """
+#     Prepare:
+#     - retriever (MMR for diversity)
+#     - llm (Ollama)
+#     - prompt template (Chinese, context-grounded)
+#     """
+#     # MMR: Maximal Marginal Relevance helps avoid returning redundant chunks
+#     retriever = vectorstore.as_retriever(
+#         search_type="mmr",
+#         search_kwargs={"k": TOP_K, "fetch_k": 40, "lambda_mult": 0.5},
+#     )
+
+
+#     # Load LLM
+#     # llm = OllamaLLM(model=OLLAMA_MODEL)
+
+#     # The prompt enforces "answer only from context" behavior.
+#     prompt = PromptTemplate(
+#         template=(
+#             "你是一个严谨但表达自然的助手。请严格根据【上下文】回答问题。\n"
+#             "- 如果上下文中没有相关信息，请直接回答：“文档中未找到相关内容。”\n"
+#             "- 用中文回答。\n\n"
+#             "【上下文】\n{context}\n\n"
+#             "【对话历史】\n{chat_history}\n\n"
+#             "【用户问题】\n{question}\n\n"
+#             "【回答】"
+#         ),
+#         input_variables=["context", "chat_history", "question"],
+#     )
+
+#     return {"retriever": retriever, "llm": llm, "prompt": prompt}
+
+# Use OpenAI API
 def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
-    """
-    Prepare:
-    - retriever (MMR for diversity)
-    - llm (Ollama)
-    - prompt template (Chinese, context-grounded)
-    """
-    # MMR: Maximal Marginal Relevance helps avoid returning redundant chunks
     retriever = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={"k": TOP_K, "fetch_k": 40, "lambda_mult": 0.5},
     )
 
-    llm = OllamaLLM(model=OLLAMA_MODEL)
-
-    # The prompt enforces "answer only from context" behavior.
     prompt = PromptTemplate(
         template=(
             "你是一个严谨但表达自然的助手。请严格根据【上下文】回答问题。\n"
@@ -317,7 +351,7 @@ def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
         input_variables=["context", "chat_history", "question"],
     )
 
-    return {"retriever": retriever, "llm": llm, "prompt": prompt}
+    return {"retriever": retriever, "prompt": prompt}
 
 
 # ---------------------------
@@ -458,9 +492,14 @@ async def chat(req: ChatRequest):
     # Compact history for the prompt (NOT used for retrieval)
     chat_history = _messages_to_history_text(req.messages, max_turns=12)
 
+    # Use OpenAI API
     retriever = rag["retriever"]
-    llm = rag["llm"]
     prompt = rag["prompt"]
+
+    # Local LLM
+    # retriever = rag["retriever"]
+    # llm = rag["llm"]
+    # prompt = rag["prompt"]
 
     # Run retrieval+generation in a background thread (sync calls)
     def run_rag():
@@ -477,8 +516,17 @@ async def chat(req: ChatRequest):
             chat_history=chat_history,
             question=question
         )
+        
+        # Local LLM
+        # answer = (llm.invoke(prompt_text) or "").strip()
 
-        answer = (llm.invoke(prompt_text) or "").strip()
+        # Use OpenAI API
+        resp = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=prompt_text,
+        )
+
+        answer = (resp.output_text or "").strip()
 
         # Attach quick sources (page numbers) from metadata, best-effort
         sources = []
