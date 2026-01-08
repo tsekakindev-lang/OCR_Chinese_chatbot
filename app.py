@@ -1,6 +1,7 @@
 # uvicorn app:app --reload --port 8000
 # ^ Handy command to run the FastAPI server in dev mode.
 
+# Debug print so you can confirm which file is being executed (useful if multiple copies exist).
 print("RUNNING app.py FROM:", __file__)
 
 import os
@@ -24,14 +25,14 @@ from langchain_core.documents import Document as LangChainDocument
 from langchain_core.prompts import PromptTemplate
 from langchain_community.document_loaders import PyMuPDFLoader
 
-# --- Chroma low-level client (for deleting collections) ---
+# --- Chroma low-level client (used here mainly to delete/reset collections cleanly) ---
 import chromadb
 
 # ---------------------------
 # Poppler / OCR support (Windows-friendly)
 # ---------------------------
-# pdf2image needs Poppler (pdftoppm) to render PDF pages as images for OCR.
-# This block tries to auto-detect a local bundled poppler folder and set POPPLER_PATH.
+# pdf2image needs Poppler (pdftoppm.exe) to render PDF pages as images for OCR.
+# This block tries to auto-detect a locally bundled Poppler folder and sets POPPLER_PATH.
 from pathlib import Path
 
 if not os.getenv("POPPLER_PATH"):
@@ -44,8 +45,8 @@ if not os.getenv("POPPLER_PATH"):
             os.environ["POPPLER_PATH"] = str(c)
             break
 
-# Optional OCR deps (for scanned PDFs)
-# If these imports fail, OCR fallback will be disabled.
+# Optional OCR deps (for scanned PDFs).
+# If these imports fail, OCR fallback will be disabled (native text extraction still works).
 try:
     import pytesseract  # type: ignore
     from pdf2image import convert_from_path  # type: ignore
@@ -55,7 +56,8 @@ except Exception:  # pragma: no cover
     convert_from_path = None
     pdfinfo_from_path = None
 
-# Windows Tesseract defaults (only used if OCR is invoked)
+# Windows Tesseract defaults (only used if OCR is invoked).
+# Note: This sets TESSDATA_PREFIX globally for the process.
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 os.environ["TESSDATA_PREFIX"] = r"C:\Program Files\Tesseract-OCR\tessdata"
 
@@ -64,55 +66,54 @@ os.environ["TESSDATA_PREFIX"] = r"C:\Program Files\Tesseract-OCR\tessdata"
 # ---------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Where your front-end files live (index.html, app.js, style.css under /static)
+# Front-end files are served from /static (index.html, app.js, style.css).
 STATIC_DIR = os.path.join(APP_DIR, "static")
 
-# Where uploaded PDFs are saved
+# Uploaded PDFs are stored here (one file per upload, named by hash prefix).
 UPLOAD_DIR = os.path.join(APP_DIR, "uploads")
 
-# Where per-PDF Chroma databases are created
+# Each PDF gets its own persistent Chroma folder here (so indexes don't collide).
 CHROMA_BASE_DIR = os.path.join(APP_DIR, "chroma_dbs")
 
-# Ensure directories exist
+# Ensure directories exist so the app can write files.
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CHROMA_BASE_DIR, exist_ok=True)
 
-# Local embedding model (HuggingFace) directory
-# Default points to ./bge-large-zh-v1.5 inside this project folder
+# Local embedding model folder (HuggingFace). Defaults to ./bge-large-zh-v1.5 in the project dir.
 EMBED_MODEL_PATH = os.getenv("EMBED_MODEL_PATH", os.path.join(APP_DIR, "bge-large-zh-v1.5"))
 
-# LLM served by Ollama
+# LLM served by Ollama. Adjust to whichever model you have pulled locally.
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
 
-# Chunking parameters for building the vectorstore
+# Chunking parameters: affects retrieval granularity and vectorstore size.
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
 
-# Retriever top-k (how many chunks to retrieve per question)
+# Retriever top-k: how many chunks to fetch for answering a question.
 TOP_K = int(os.getenv("TOP_K", "5"))
 
-# OCR params (Traditional Chinese by default)
+# OCR params: Traditional Chinese by default.
 OCR_LANG = os.getenv("OCR_LANG", "chi_tra")
 OCR_DPI = int(os.getenv("OCR_DPI", "200"))
 
-# Poppler binary path (used by pdf2image)
+# Poppler binary path (used by pdf2image). Auto-detected above if bundled.
 POPPLER_PATH = os.getenv("POPPLER_PATH", "") or None
 
-# Chroma collection name inside each per-PDF persistent store
+# Chroma collection name inside each per-PDF persistent store.
 COLLECTION_NAME = "rag_collection"
 
 # ---------------------------
 # State (in-memory)
 # ---------------------------
 # This server keeps only ONE active indexed PDF at a time.
-# The global dict holds where the PDF is and the “rag components” used by /chat.
+# STATE holds paths to disk artifacts + the currently active RAG components for /chat.
 STATE_LOCK = Lock()
 
 STATE: dict[str, Any] = {
-    "pdf_path": None,     # path to the uploaded PDF
-    "chroma_dir": None,   # folder where Chroma persisted vectors for that PDF
-    "rag": None,          # retriever + llm + prompt template
+    "pdf_path": None,     # Full path to the uploaded PDF
+    "chroma_dir": None,   # Folder where Chroma vectors are persisted for that PDF
+    "rag": None,          # Dict: vectorstore + retrievers + llm + prompt template
 }
 
 # ---------------------------
@@ -120,12 +121,13 @@ STATE: dict[str, Any] = {
 # ---------------------------
 def load_pdf_to_page_docs(pdf_path: str) -> list[LangChainDocument]:
     """
-    Use PyMuPDFLoader to extract text from the PDF.
-    Typically returns one LangChain Document per page.
+    Extract text from the PDF using PyMuPDFLoader.
+    Typically returns one LangChain Document per page, with page metadata.
     """
     loader = PyMuPDFLoader(pdf_path)
     docs = loader.load()  # usually per page
     for d in docs:
+        # Ensure each page doc has a source marker for later tracing/debugging.
         d.metadata.setdefault("source", pdf_path)
     return docs
 
@@ -134,19 +136,19 @@ def load_pdf_to_page_docs(pdf_path: str) -> list[LangChainDocument]:
 # Helpers: OCR fallback (for scanned PDFs)
 # ---------------------------
 def _ensure_ocr_ready() -> None:
-    """Validate OCR dependencies and configuration."""
+    """Validate OCR dependencies and configure Tesseract binary path."""
     if pytesseract is None or convert_from_path is None or pdfinfo_from_path is None:
         raise RuntimeError(
             "OCR dependencies are missing. Install 'pytesseract' and 'pdf2image' "
             "and ensure Poppler is available on the system."
         )
-    # Set the tesseract binary path if configured
+    # Configure the tesseract binary path if present (Windows).
     if TESSERACT_CMD:
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
 def get_pdf_page_count(pdf_path: str) -> int:
-    """Return page count using pdf2image (Poppler)."""
+    """Return page count using pdf2image + Poppler."""
     _ensure_ocr_ready()
     info = pdfinfo_from_path(pdf_path, poppler_path=POPPLER_PATH)
     return int(info.get("Pages", 0))
@@ -160,8 +162,9 @@ def ocr_pdf_to_page_docs(
     dpi: int = OCR_DPI,
 ) -> list[LangChainDocument]:
     """
-    OCR a (scanned) PDF into one LangChain Document per page.
-    Pages are 1-indexed for start/end inputs.
+    OCR a scanned PDF into one LangChain Document per page.
+    - Pages are 1-indexed for start/end.
+    - Each page is rendered to an image (pdf2image) then recognized (tesseract).
     """
     _ensure_ocr_ready()
 
@@ -174,7 +177,6 @@ def ocr_pdf_to_page_docs(
 
     page_docs: list[LangChainDocument] = []
 
-    # Render each page to an image, then run Tesseract
     for page_num in range(start_page, end_page + 1):
         images = convert_from_path(
             pdf_path,
@@ -199,10 +201,17 @@ def ocr_pdf_to_page_docs(
 
     return page_docs
 
+
+# ---------------------------
+# Question intent heuristics (overview / structure)
+# ---------------------------
+# These helpers try to detect “介紹/概述/summary” style questions and “幾章/章節” structure questions.
+# When detected, retrieval is broadened with pre-defined expansions and doc-card hints.
 import re
 _CHAPTER_RE = re.compile(r"第[\d一二三四五六七八九十百千]+章")
 
 def is_overview_q(q: str) -> bool:
+    """True if user asks 'what is this about' / summary / overview."""
     q = (q or "").lower()
     return any(k in q for k in [
         "介紹","简介","簡介","概述","總覽","总览","這本書","这本书","這份文件","这份文件",
@@ -210,6 +219,7 @@ def is_overview_q(q: str) -> bool:
     ])
 
 def is_structure_q(q: str) -> bool:
+    """True if user asks about chapter count/structure/contents."""
     q0 = q or ""
     ql = q0.lower()
     return (
@@ -218,6 +228,10 @@ def is_structure_q(q: str) -> bool:
     )
 
 def _normalize_pages_1_based(docs: list[LangChainDocument]) -> None:
+    """
+    Some loaders store pages as 0-based indices. This normalizes to 1-based pages,
+    so citations like p.1, p.2 match human expectation.
+    """
     pages = [d.metadata.get("page") for d in docs if isinstance(d.metadata.get("page"), int)]
     if pages and min(pages) == 0:
         for d in docs:
@@ -226,6 +240,11 @@ def _normalize_pages_1_based(docs: list[LangChainDocument]) -> None:
                 d.metadata["page"] = p + 1
 
 
+# ---------------------------
+# “Doc card” (optional) to help answer overview/structure questions
+# ---------------------------
+# The idea: pre-build a condensed “overview snippet” from likely-intro pages and markers,
+# then append it as a special Document so the retriever can find it easily.
 OVERVIEW_MARKERS = [
     "摘要","Abstract","前言","序","導論","绪论","引言","introduction",
     "研究目的","目的","方法","method","研究方法","結論","结论","總結","总结",
@@ -234,14 +253,21 @@ OVERVIEW_MARKERS = [
 ]
 
 def build_doc_card(page_docs, head_pages=10, max_chars=7000):
+    """
+    Build a synthetic Document that contains:
+    - First N pages (often have preface/introduction)
+    - Any pages containing overview markers (摘要/前言/第一章...)
+    This helps retrieval for “介紹/幾章” type questions.
+    """
     head = page_docs[:head_pages]
     hits = [d for d in page_docs if any(m in (d.page_content or "") for m in OVERVIEW_MARKERS)]
-    # de-dupe by page
+
+    # De-duplicate by page number so we don't repeat the same page content.
     seen = set()
     picked = []
     for d in head + hits:
         p = d.metadata.get("page")
-        if p in seen: 
+        if p in seen:
             continue
         seen.add(p)
         picked.append(d)
@@ -252,6 +278,7 @@ def build_doc_card(page_docs, head_pages=10, max_chars=7000):
         txt = (d.page_content or "").strip()
         if not txt:
             continue
+
         chunk = f"[p.{p}]\n{txt}"
         if total + len(chunk) > max_chars:
             break
@@ -266,31 +293,29 @@ def build_doc_card(page_docs, head_pages=10, max_chars=7000):
         metadata={"type": "doc_card", "page": 1}
     )
 
+
 # ---------------------------
-# Vectorstore build
+# Vectorstore build (chunk -> embed -> persist)
 # ---------------------------
 def build_vectorstore(page_docs: list[LangChainDocument], chroma_dir: str) -> Chroma:
     """
-    Split docs into chunks, embed them, and persist into a Chroma database.
-    Each upload gets its own persistent Chroma folder under CHROMA_BASE_DIR.
+    Split docs into chunks, embed them, and persist into a per-PDF Chroma DB folder.
+    - Each upload maps to a unique chroma_dir under CHROMA_BASE_DIR.
     """
-    # Chunking so retrieval hits smaller, relevant spans
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
     )
     chunks = splitter.split_documents(page_docs)
 
-    # Local HF embeddings (great for Chinese if model is appropriate)
     embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL_PATH)
 
-    # If a previous collection exists in this same chroma_dir, delete it first
+    # Reset the collection inside this directory (avoid mixing old vectors with new ones).
     client = chromadb.PersistentClient(path=chroma_dir)
     try:
         client.delete_collection(COLLECTION_NAME)
     except Exception:
         pass
 
-    # Build + persist the vector store
     return Chroma.from_documents(
         documents=chunks,
         embedding=embeddings,
@@ -300,15 +325,14 @@ def build_vectorstore(page_docs: list[LangChainDocument], chroma_dir: str) -> Ch
 
 
 # ---------------------------
-# Chat history shaping
+# Chat history shaping (compact prompt history)
 # ---------------------------
 def _messages_to_history_text(messages: list["ChatMessage"], max_turns: int = 12) -> str:
     """
-    Convert messages into compact history text.
-    - Uses the last `max_turns` user+assistant turns (system messages excluded).
-    - Excludes the latest user question from history (so it doesn't repeat).
+    Convert messages into compact text for the prompt.
+    - Keeps the last ~max_turns user+assistant turns (system messages excluded)
+    - Excludes the latest user message so it doesn't repeat inside history
     """
-    # Find last user message index (the "current" question)
     last_user_idx = None
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].role == "user" and messages[i].content.strip():
@@ -320,18 +344,21 @@ def _messages_to_history_text(messages: list["ChatMessage"], max_turns: int = 12
 
     lines = []
     for m in messages[:upto]:
-        role = m.role
-        if role == "system":
+        if m.role == "system":
             continue
         text = (m.content or "").strip()
         if not text:
             continue
-        lines.append(f"{role}: {text}")
+        lines.append(f"{m.role}: {text}")
 
-    # Only keep the last N turns (approx: 2 lines per turn)
     return "\n".join(lines[-max_turns * 2 :])
 
 def _format_docs(docs: list[LangChainDocument], max_chars: int = 12000) -> str:
+    """
+    Build the context block shown to the LLM.
+    - Adds [p.X] prefixes for better grounded citations
+    - Truncates by total character budget
+    """
     parts, total = [], 0
     for d in docs or []:
         txt = (d.page_content or "").strip()
@@ -345,21 +372,23 @@ def _format_docs(docs: list[LangChainDocument], max_chars: int = 12000) -> str:
         total += len(chunk)
     return "\n\n".join(parts)
 
+
 # ---------------------------
-# RAG components (retriever + llm + prompt)
+# RAG components (retrievers + llm + prompt)
 # ---------------------------
 def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
     """
     Prepare:
-    - retriever (MMR for diversity)
+    - multiple retrievers (normal/overview/structure) using MMR for diversity
     - llm (Ollama)
-    - prompt template (Chinese, context-grounded)
+    - prompt that enforces "answer only from context" + special behavior for overview questions
     """
-    # MMR: Maximal Marginal Relevance helps avoid returning redundant chunks
     retriever = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={"k": TOP_K, "fetch_k": 40, "lambda_mult": 0.5},
     )
+
+    # Wider retrievers used for broad questions (overview/structure) to increase recall.
     retriever_overview = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={"k": max(TOP_K, 12), "fetch_k": 60, "lambda_mult": 0.5},
@@ -371,7 +400,7 @@ def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
 
     llm = OllamaLLM(model=OLLAMA_MODEL)
 
-    # The prompt enforces "answer only from context" behavior.
+    # Prompt: Chinese answer, strictly grounded; adds special instruction for overview mode.
     prompt = PromptTemplate(
         template=(
             "你是一个严谨但表达自然的助手。请严格根据【上下文】回答问题。\n"
@@ -400,14 +429,20 @@ def build_rag_components(vectorstore: Chroma) -> dict[str, Any]:
 # Index build (runs in a thread via asyncio.to_thread)
 # ---------------------------
 def _build_sync(pdf_path: str, chroma_dir: str) -> None:
-    # 1) Try native text extraction
+    """
+    Build the index for a single uploaded PDF:
+    1) Try native text extraction
+    2) If too little text, OCR fallback
+    3) Build doc_card (optional) and append
+    4) Create embeddings + persist to Chroma
+    5) Build RAG components and store them as the active state
+    """
     page_docs = load_pdf_to_page_docs(pdf_path)
     _normalize_pages_1_based(page_docs)
 
-    # If the PDF is scanned, PyMuPDFLoader will often extract almost nothing.
+    # If the PDF is scanned, native extraction often returns almost nothing.
     total_chars = sum(len(((d.page_content or "").strip())) for d in page_docs)
     if total_chars < 200:
-        # 2) OCR fallback (best effort)
         try:
             page_docs = ocr_pdf_to_page_docs(pdf_path)
         except Exception as e:
@@ -422,30 +457,30 @@ def _build_sync(pdf_path: str, chroma_dir: str) -> None:
                 "This PDF may be image-only or the OCR language/config is incorrect."
             )
 
-    # ✅ Now page_docs is final (native or OCR): build doc_card
+    # Build a synthetic “doc card” to improve overview/structure Q&A.
     doc_card = build_doc_card(page_docs, head_pages=10)
     if doc_card:
         doc_card.metadata.setdefault("source", pdf_path)
         page_docs.append(doc_card)
 
-    # 3) Build + persist embeddings
+    # Build + persist embeddings
     vectorstore = build_vectorstore(page_docs, chroma_dir)
 
-    # 4) Prepare retriever + llm + prompt
+    # Prepare retrievers + llm + prompt
     rag = build_rag_components(vectorstore)
 
+    # Store as the single active document state.
     with STATE_LOCK:
         STATE["pdf_path"] = pdf_path
         STATE["chroma_dir"] = chroma_dir
         STATE["rag"] = rag
 
 
-
 # ---------------------------
 # API schemas (request bodies)
 # ---------------------------
 class ChatMessage(BaseModel):
-    # Ignore unknown fields so the frontend can send extra keys safely
+    # Ignore unknown fields so frontend can send extra keys safely.
     model_config = ConfigDict(extra="ignore")
 
     id: Optional[str] = None
@@ -470,8 +505,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 def home():
     """
-    Serves the frontend HTML.
-    Your index.html is expected at: static/index.html
+    Serves the frontend HTML at GET /.
+    Expects index.html at: static/index.html
     """
     index_path = os.path.join(STATIC_DIR, "index.html")
     if not os.path.exists(index_path):
@@ -482,24 +517,23 @@ def home():
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     """
-    Upload a PDF, save it, build the index, and set the global active RAG state.
-    Returns a short stable ID (hash prefix) to identify the upload.
+    Upload a PDF, save it to disk, build the index, and set global active RAG state.
+    Returns a short stable ID (hash prefix) based on file bytes.
     """
     if file.content_type != "application/pdf":
         raise HTTPException(400, "Please upload a PDF (application/pdf).")
 
-    # Read bytes, hash them (so same file gets same ID)
     raw = await file.read()
     file_id = hashlib.sha256(raw).hexdigest()[:12]
 
     pdf_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
     chroma_dir = os.path.join(CHROMA_BASE_DIR, file_id)
 
-    # Write PDF to disk
+    # Persist PDF to disk so loaders/OCR can access it by path.
     with open(pdf_path, "wb") as f:
         f.write(raw)
 
-    # Build index in a worker thread so the event loop stays responsive
+    # Build index in a worker thread so the FastAPI event loop stays responsive.
     try:
         await asyncio.to_thread(_build_sync, pdf_path, chroma_dir)
     except Exception as e:
@@ -510,24 +544,32 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    # Get current active RAG components
+    """
+    Chat endpoint:
+    - Uses active RAG state (must upload first)
+    - Detects question type (structure/overview/normal)
+    - Retrieves relevant chunks
+    - Calls local LLM (Ollama) with a grounded prompt
+    - Appends page “Sources” from the retrieved docs
+    """
     with STATE_LOCK:
         rag = STATE.get("rag")
 
     if rag is None:
         raise HTTPException(400, "No PDF indexed yet. Upload a PDF first.")
 
-    # Extract latest user question
+    # Extract the latest user question from the message list.
     user_msgs = [m for m in req.messages if m.role == "user" and (m.content or "").strip()]
     if not user_msgs:
         return {"reply": "Send a message first."}
     question = user_msgs[-1].content.strip()
 
-    # Compact history for the prompt (NOT used for retrieval)
+    # Compact history for prompt (history is NOT used for retrieval).
     chat_history = _messages_to_history_text(req.messages, max_turns=12)
 
     NOT_FOUND = "文档中未找到相关内容。"
 
+    # Expansions are appended as additional retrieval queries to increase recall for broad questions.
     OVERVIEW_EXPANSIONS = [
         "摘要 前言 引言 结论 总结 目的 方法 主要贡献 本书 本文",
         "what is this document about abstract introduction conclusion contribution",
@@ -538,6 +580,7 @@ async def chat(req: ChatRequest):
     ]
 
     def _dedupe_docs(docs: list[LangChainDocument]) -> list[LangChainDocument]:
+        """Remove near-duplicate retrieved docs (page/type/content prefix as key)."""
         seen, out = set(), []
         for d in docs or []:
             key = (d.metadata.get("type"), d.metadata.get("page"), (d.page_content or "")[:180])
@@ -548,6 +591,10 @@ async def chat(req: ChatRequest):
         return out
 
     def _retrieve_many(r, queries: list[str]) -> list[LangChainDocument]:
+        """
+        Run multiple retrieval queries against one retriever and merge the results.
+        Supports both .get_relevant_documents() and .invoke() depending on version.
+        """
         got = []
         for q in queries:
             try:
@@ -557,6 +604,10 @@ async def chat(req: ChatRequest):
         return got
 
     def run_rag_sync() -> str:
+        """
+        Heavy work done off the event loop:
+        - retrieval + prompt formatting + LLM call
+        """
         vectorstore = rag["vectorstore"]
         r_normal = rag["retriever"]
         r_overview = rag["retriever_overview"]
@@ -564,7 +615,7 @@ async def chat(req: ChatRequest):
         llm = rag["llm"]
         prompt = rag["prompt"]
 
-        # ✅ priority: structure > overview > normal
+        # Choose retrieval mode by question intent.
         if is_structure_q(question):
             mode = "structure"
         elif is_overview_q(question):
@@ -572,17 +623,19 @@ async def chat(req: ChatRequest):
         else:
             mode = "normal"
 
-        # Try to fetch doc_card directly (filter)
+        # Try to fetch doc_card directly (if supported) so broad questions have a strong anchor.
         doc_card_docs = []
         try:
             doc_card_docs = vectorstore.similarity_search("DOC_CARD", k=1, filter={"type": "doc_card"})
         except TypeError:
-            # older/variant API: no filter support
+            # Older API variant: no filter argument.
             doc_card_docs = vectorstore.similarity_search("DOC_CARD", k=1)
         except Exception:
             doc_card_docs = []
 
-
+        # Retrieval strategy:
+        # - overview/structure: doc_card + expanded queries using wider retrievers
+        # - normal: just the main retriever with the raw question
         if mode == "overview":
             docs = doc_card_docs + _retrieve_many(r_overview, [question] + OVERVIEW_EXPANSIONS)
         elif mode == "structure":
@@ -593,6 +646,7 @@ async def chat(req: ChatRequest):
         docs = _dedupe_docs(docs)
 
         def _answer_with(docs_for_ctx: list[LangChainDocument]) -> tuple[str, list[LangChainDocument]]:
+            """Format context + run LLM once."""
             context_text = _format_docs(docs_for_ctx)
             prompt_text = prompt.format(context=context_text, chat_history=chat_history, question=question)
             ans = (llm.invoke(prompt_text) or "").strip()
@@ -600,7 +654,8 @@ async def chat(req: ChatRequest):
 
         answer, used_docs = _answer_with(docs)
 
-        # 2-pass fallback: broaden once if NOT_FOUND
+        # Second-pass fallback:
+        # If the model responds NOT_FOUND, broaden retrieval once (overview + structure expansions).
         if answer.startswith(NOT_FOUND):
             broader = doc_card_docs + _retrieve_many(
                 r_overview, [question] + OVERVIEW_EXPANSIONS + STRUCTURE_EXPANSIONS
@@ -610,8 +665,7 @@ async def chat(req: ChatRequest):
             if not answer2.startswith(NOT_FOUND):
                 answer, used_docs = answer2, used_docs2
 
-
-        # sources
+        # Build "Sources: p.X, p.Y" from the docs actually used as context.
         pages = []
         for d in used_docs[:12]:
             if d.metadata.get("type") == "doc_card":
@@ -625,12 +679,19 @@ async def chat(req: ChatRequest):
 
         return answer
 
+    # Run retrieval + LLM off-thread.
     reply = await asyncio.to_thread(run_rag_sync)
     return {"reply": reply}
 
+
 @app.post("/clear")
 def clear() -> dict[str, Any]:
-    # 1) snapshot paths + reset in-memory state (thread-safe)
+    """
+    Clear endpoint:
+    - resets in-memory active document
+    - deletes uploaded PDF file (best-effort)
+    - deletes the per-PDF Chroma directory (best-effort)
+    """
     with STATE_LOCK:
         pdf_path = STATE.get("pdf_path")
         chroma_dir = STATE.get("chroma_dir")
@@ -638,7 +699,6 @@ def clear() -> dict[str, Any]:
         STATE["chroma_dir"] = None
         STATE["rag"] = None
 
-    # 2) best-effort delete local artifacts
     if pdf_path and os.path.exists(pdf_path):
         try:
             os.remove(pdf_path)
