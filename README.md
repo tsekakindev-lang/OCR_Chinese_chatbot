@@ -204,6 +204,57 @@ If you’re on macOS or Linux, update the constants in `app.py` or set your envi
 
 ---
 
+# 🤖 OpenAI API Version
+
+This repo includes an **OpenAI-powered backend** that replaces the local LLM with an OpenAI model.
+
+- ✅ File: `app_openai.py`
+- 🔁 Same workflow: **Upload PDF → Retrieve chunks → Ask questions**
+- 🔐 Uses `OPENAI_API_KEY` from environment variables
+
+## 🚀 Quick Start
+
+### 1) Install dependencies
+```bash
+pip install -U openai python-dotenv
+```
+
+### 2) Create a .env file (recommended)
+
+Create a file named `.env` in the same folder as `app_openai.py`:
+```env
+OPENAI_API_KEY=sk-your_key_here
+OPENAI_MODEL=gpt-4o-mini
+```
+Add `.env` to `.gitignore` to avoid leaking your key.
+
+### 3) Run the server
+
+```bash
+uvicorn app_openai:app --reload --port 8000
+```
+## 🧪 Verify it’s working
+
+When you send a chat request, you should see:
+
+- ✅ 200 OK responses
+
+- a model-generated answer
+
+- no “local model” logs
+
+## 🌍 Network Notes
+
+Some networks/regions may block OpenAI requests.
+
+- 🛜 Try a different network (e.g., mobile hotspot)
+
+- 🌐 Try use VPN
+
+- 🧩 If your traffic is routed through restricted locations, requests may fail
+
+---
+
 # 📡 API Endpoints
 
 | Method | Path      | Description                           |
